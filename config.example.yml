@@ -1,14 +1,19 @@
 codex_home: ~/.codex
 machine_id: my-machine
+# Local file-level incremental baseline. Keep this outside codex_home.
+# On a new device, existing remote files are content-checked once before the
+# local incremental baseline is created.
+manifest_path: ~/.codex-session-sync/manifest.json
 
 sync:
   mode: cold
+  # bidirectional | push | pull; controls which side is authoritative.
   direction: bidirectional
   compare: mtime
   time_tolerance_seconds: 2
   equal_mtime_action: skip
   delete_policy: never
-  session_mode: last_date_only
+  session_mode: all
 
 conflict:
   policy: manual_abort
@@ -24,6 +29,8 @@ webdav:
   username: your_username
   password: your_password
   remote_path: /codex-sync
+  # The internal .cxsync-manifest.json is kept at this path on the server
+  # and is excluded from the user file sync plan.
 
 server:
   port: 7420

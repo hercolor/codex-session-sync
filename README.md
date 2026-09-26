@@ -17,6 +17,7 @@ Codex (CLI / Desktop / IDE extension) keeps all conversation state in a local `~
 | Feature | Description |
 |---------|-------------|
 | WebDAV sync | Bidirectional sync of sessions / skills / plugins with Nextcloud, Synology, Koofr, or any WebDAV server |
+| Incremental sync | File-level incremental updates by default, with one-time content checks when a new device joins an existing repository |
 | Web GUI | Dashboard, session browser, sync progress (SSE live stream), backup management — at `http://localhost:7420` |
 | Session management | Browse by project, search, rename (syncs back into Codex's own UI), delete (cleans all three Codex stores) |
 | Provider merge | Merge sessions isolated between ChatGPT web login (`openai`) and API-key login (`custom`) into one visible list |
@@ -26,7 +27,7 @@ Codex (CLI / Desktop / IDE extension) keeps all conversation state in a local `~
 
 ## Requirements
 
-- Node.js **≥ 22.5** (uses built-in `node:sqlite`; sync/backup alone works on ≥ 18)
+- Node.js **≥ 22.5** (uses the built-in `node:sqlite` module)
 - Codex CLI or Codex Desktop installed (a `~/.codex` directory exists)
 - Windows / macOS / Linux (Windows is the most battle-tested)
 
@@ -54,6 +55,28 @@ npm install -g .
 
 </details>
 
+To create a portable package for installation on other machines:
+
+```bash
+npm install
+npm test
+npm pack --dry-run       # inspect package contents
+npm pack                 # creates codex-session-sync-<version>.tgz
+npm install -g ./codex-session-sync-<version>.tgz
+```
+
+To publish to the npm registry:
+
+```bash
+npm login
+npm version patch        # npm versions must be unique
+npm publish --access public
+```
+
+The `prepublishOnly` hook runs `npm test` before publishing. After publication,
+other machines can use `npm install -g codex-session-sync` or
+`npx codex-session-sync`.
+
 ## Quick start
 
 ```bash
@@ -77,8 +100,11 @@ cxsync            # same as `cxsync serve`
 Or go CLI-only:
 
 ```bash
-cxsync sync --dry-run   # preview
-cxsync sync --apply     # sync for real
+cxsync push --dry-run   # preview local -> WebDAV
+cxsync push             # upload (close Codex first)
+cxsync pull --dry-run   # preview WebDAV -> local
+cxsync pull             # download (close Codex first)
+# Generic form: cxsync sync --direction push --apply
 ```
 
 ## CLI reference
@@ -88,7 +114,9 @@ cxsync init-config [--output <path>] [--force]     Generate config file
 cxsync validate                                    Validate config
 cxsync doctor                                      Preflight diagnostics
 cxsync plan                                        Show sync plan (read-only)
-cxsync sync --dry-run | --apply                    Sync local <-> WebDAV
+cxsync push [--dry-run]                            Local -> WebDAV (applies by default)
+cxsync pull [--dry-run]                            WebDAV -> local (applies by default)
+cxsync sync --direction <direction> --dry-run      Generic sync entry point
 cxsync restore [--from <snapshot>] --apply         Restore from backup
 cxsync sessions [--project <name>]                 List local sessions
 cxsync merge-providers --list                      Show sessions per login provider
@@ -103,16 +131,42 @@ Exit codes: `3` = Codex is running (close it first).
 ## Typical workflow: machine A → machine B
 
 ```bash
-# On machine A: close Codex, then
-cxsync sync --apply
+# On machine A: close Codex, then upload
+cxsync push
 
 # Wait for your WebDAV/cloud server to settle
 
-# On machine B: close Codex, then
-cxsync sync --apply
+# On machine B: close Codex, then download
+cxsync pull
 
-# Reopen Codex — sessions are there
+# List IDs and resume the same session instead of starting a new one
+cxsync sessions
+codex resume --all <SESSION_ID>
 ```
+
+`sessions/**` contains the conversation context and `session_index.jsonl` is the
+resume index. `cxsync sessions` prints copyable IDs; after pulling, use `codex resume --all <SESSION_ID>`. Launching plain
+`codex` starts a new conversation. Rollouts keep the absolute `cwd` from the
+source device, so keep project directories consistent when possible. Otherwise
+use `codex resume --all` to list sessions across working directories and open the matching project directory on the target device. Source
+code, dependencies, and login state are outside this tool's sync scope.
+
+Sync is file-level incremental by default. The local manifest stores this
+device's history. On a new device, existing remote files are content-checked
+once so different filesystem mtimes cannot silently overwrite a session. After
+a successful run, the local manifest records the last observed metadata for
+each relative path and is updated atomically. The same observations are kept on
+the WebDAV server as the internal
+`.cxsync-manifest.json` file under `webdav.remote_path`; it is retained on the
+remote and excluded from the user file plan.
+
+The sync direction controls which side is authoritative:
+
+| Direction | Behavior |
+|-----------|----------|
+| `bidirectional` | Propagate changes from either side; changes on both sides follow the configured conflict policy |
+| `push` | Treat local files as the source and upload local changes; remote-only files are left untouched |
+| `pull` | Treat remote files as the source and download remote versions; matching local files are overwritten after a `.bak` copy |
 
 ## Web GUI
 
@@ -129,7 +183,7 @@ cxsync sync --apply
 |-------|---------|
 | `sessions/YYYY/MM/DD/rollout-*.jsonl` | Conversation content (JSONL, first line is `session_meta`) |
 | `session_index.jsonl` | Index used by `codex resume` |
-| `state_5.sqlite` → `threads` | Source of truth for the Codex Desktop session list (titles, providers) |
+| `state_5.sqlite` → `threads` | Desktop's local index (absolute paths and login metadata; not overwritten across devices) |
 
 Rename writes stores 2+3 (auto-creating missing index entries). Delete cleans all three. Provider merge rewrites `model_provider` in stores 1+3.
 
@@ -139,8 +193,9 @@ See [`config.example.yml`](./config.example.yml) for the full annotated config. 
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `manifest_path` | `~/.codex-session-sync/manifest.json` | Local file-level sync baseline; keep it outside `codex_home` |
 | `sync.direction` | `bidirectional` | `bidirectional` / `push` / `pull` |
-| `sync.session_mode` | `last_date_only` | Sync only latest date folder, or `all` |
+| `sync.session_mode` | `all` | Sync all date folders so older sessions remain resumable |
 | `sync.compare` | `mtime` | `mtime` or `mtime_hash_fallback` (SHA-256 tiebreak) |
 | `conflict.policy` | `manual_abort` | Conflict resolution strategy |
 | `backup.compression` | `none` | `none` (directory) or `zip` |
@@ -166,6 +221,8 @@ Project layout: see [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
 - Every overwrite/merge/restore is preceded by an automatic snapshot
 - WebDAV credentials live only in your local `config.yml` (never uploaded)
 - The GUI server binds to `127.0.0.1` — not reachable from the network
+- `auth.json`, tokens, API keys, and Desktop `state_5.sqlite` are not synchronized; use CLI `codex resume` for cross-device handoff
+- The WebDAV root is allowlisted to `sessions/**`, `session_index.jsonl`, `skills/**`, and `plugins/**`; other files are ignored
 
 ## Acknowledgements
 

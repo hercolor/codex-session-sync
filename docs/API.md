@@ -43,6 +43,27 @@ Writes new name into `session_index.jsonl`.
 
 ## Sync
 
+Sync uses file-level incremental comparison by default. This device's baseline
+is stored at `manifest_path` (default: `~/.codex-session-sync/manifest.json`).
+When the device has no local baseline, the planner compares current files
+directly; existing remote files are content-checked once so cross-device mtime
+differences cannot silently overwrite a session. After a successful apply, the
+remote observations are refreshed and the local manifest is replaced atomically
+with the observed metadata for each relative path.
+
+The remote baseline is retained as the internal
+`.cxsync-manifest.json` file at the root of `webdav.remote_path`. It is not
+included in `to_upload`, `to_download`, `conflicts`, or `unchanged`, and is
+never treated as a user session file.
+
+`sync.direction` controls authority when building the plan:
+
+| Value | Behavior |
+|-------|----------|
+| `bidirectional` | Propagate changes from either side; simultaneous changes are reported as conflicts and follow `conflict.policy` during apply |
+| `push` | Local is authoritative; uploads are planned, while remote-only files and remote changes are left untouched |
+| `pull` | Remote is authoritative; remote versions are downloaded over matching local files, with local backup enabled by default |
+
 ### POST /api/sync/plan
 Build a sync plan without writing any files.
 
@@ -51,14 +72,23 @@ Request: `{}` (uses current config)
 Response:
 ```json
 {
+  "incremental": true,
+  "baseline": "local",
   "plan": {
     "to_upload": ["sessions/2026/07/17/..."],
     "to_download": [],
     "conflicts": [],
-    "unchanged": 14
+    "unchanged": ["sessions/2026/07/16/..."]
   }
 }
 ```
+
+`baseline` is `local` or `none`, indicating whether this device had a local
+manifest. `none` means the planner compared the current endpoints directly.
+
+`unchanged` is the list of paths that require no operation after
+comparing the current observations with the manifest baseline. The plan is
+read-only; it does not update either manifest.
 
 ### POST /api/sync/apply
 Execute sync. Streams SSE events on the same connection.
@@ -67,12 +97,19 @@ Execute sync. Streams SSE events on the same connection.
 
 Events:
 ```
-data: {"type":"start","total":5}
+data: {"type":"start","total":5,"incremental":true,"baseline":"local"}
 data: {"type":"progress","file":"sessions/...","action":"upload","n":1,"total":5}
 data: {"type":"conflict","file":"...","policy":"manual_abort"}
 data: {"type":"done","uploaded":3,"downloaded":0,"skipped":2,"errors":0}
 data: {"type":"error","file":"...","message":"..."}
 ```
+
+The apply operation updates the remote manifest after file transfers and then
+replaces the local manifest atomically. A failed or aborted transfer keeps the
+previous local baseline so the next run can detect unfinished changes. If the
+remote write succeeds but the local manifest cannot be written, the response
+reports `manifest_updated: false` and an error; rerun the command after fixing
+local permissions to reconcile the baseline.
 
 ---
 
@@ -109,6 +146,10 @@ Returns current config (passwords masked).
 
 ### PUT /api/config
 Update config. Only provided keys are updated.
+
+`manifest_path` may be supplied to relocate the local incremental baseline.
+The remote manifest name and location are fixed at
+`webdav.remote_path/.cxsync-manifest.json`.
 
 ---
 

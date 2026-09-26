@@ -1,8 +1,6 @@
 // src/api/sync.js — POST /api/sync/plan, POST /api/sync/apply (SSE)
 import { Router } from 'express';
-import { scanCodexHome } from '../scanner.js';
-import { createWebDAVClient } from '../webdav-client.js';
-import { buildSyncPlan, applyPlan } from '../sync-engine.js';
+import { prepareSync, applySync } from '../sync-service.js';
 import { isCodexRunning } from '../process-check.js';
 import { sseStream } from '../server.js';
 
@@ -11,11 +9,12 @@ export const router = Router();
 router.post('/plan', async (req, res) => {
   const cfg = req.app.locals.cfg;
   try {
-    const local = await scanCodexHome(cfg.codex_home);
-    const dav = createWebDAVClient(cfg.webdav);
-    const remoteFiles = await dav.list(cfg.webdav.remote_path).catch(() => []);
-    const plan = buildSyncPlan({ localFiles: local.allFiles, remoteFiles, config: cfg });
-    res.json({ plan });
+    const state = await prepareSync(cfg);
+    res.json({
+      plan: state.plan,
+      incremental: true,
+      baseline: state.baselineSource,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -33,26 +32,21 @@ router.post('/apply', async (req, res) => {
       sse.end(); return;
     }
 
-    const local = await scanCodexHome(cfg.codex_home);
-    const dav = createWebDAVClient(cfg.webdav);
-    const remoteFiles = await dav.list(cfg.webdav.remote_path).catch(() => []);
-    const plan = buildSyncPlan({ localFiles: local.allFiles, remoteFiles, config: cfg });
+    const state = await prepareSync(cfg);
+    const { plan } = state;
 
-    const total = plan.to_upload.length + plan.to_download.length;
-    sse.send({ type: 'start', total });
+    const total = plan.to_upload.length + plan.to_download.length + plan.conflicts.length;
+    sse.send({ type: 'start', total, incremental: true, baseline: state.baselineSource });
+    for (const conflict of plan.conflicts) {
+      sse.send({ type: 'conflict', file: conflict.rel, policy: cfg.conflict?.policy ?? 'manual_abort' });
+    }
 
-    const result = await applyPlan({
-      plan, config: cfg,
-      localBase: cfg.codex_home,
-      remoteBase: cfg.webdav.remote_path,
-      davClient: dav,
-      onProgress: (p) => {
-        log.info('sync progress', p);
-        sse.send({ type: 'progress', ...p, total });
-      },
+    const result = await applySync(state, {
+      log: (p) => log.info('sync progress', p),
+      onProgress: (p) => sse.send({ type: 'progress', ...p, total }),
     });
 
-    sse.send({ type: 'done', ...result });
+    sse.send({ type: 'done', ...result, errors: result.errors.length });
   } catch (e) {
     log.error('sync error', { message: e.message });
     sse.send({ type: 'error', message: e.message });

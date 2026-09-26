@@ -87,6 +87,19 @@ function extractCwd(firstLine) {
   }
 }
 
+function parseSessionMeta(firstLine) {
+  if (!firstLine) return null;
+  try {
+    const msg = JSON.parse(firstLine);
+    const payload = msg?.payload ?? msg;
+    return payload && typeof payload === 'object' ? payload : null;
+  } catch {
+    const m = firstLine.match(/"id"\s*:\s*"((?:[^"\\]|\\.)+)"/);
+    if (!m) return null;
+    try { return { id: JSON.parse(`"${m[1]}"`) }; } catch { return null; }
+  }
+}
+
 /**
  * 扫描 codex home，返回结构化信息
  * @param {string} codexHome  ~/.codex 目录路径
@@ -116,12 +129,13 @@ export async function scanCodexHome(codexHome) {
   const sessionList = sessionFileEntries.map(f => {
     // 从文件名提取 UUID：rollout-YYYY-MM-DDThh-mm-ss-{UUID}.jsonl
     const fileNameMatch = f.rel.match(/rollout-.+?-([0-9a-f-]{36})\.jsonl$/i);
-    const id = fileNameMatch ? fileNameMatch[1] : f.rel.replace('.jsonl', '');
-    const indexEntry = indexMap.get(id) || {};
-
+    let id = fileNameMatch ? fileNameMatch[1] : f.rel.replace('.jsonl', '');
     let cwd = null;
     let project = null;
     const firstLine = readFirstLineSync(f.absPath);
+    const meta = parseSessionMeta(firstLine);
+    if (meta?.id) id = meta.id;
+    const indexEntry = indexMap.get(id) || {};
     cwd = extractCwd(firstLine);
     if (cwd) {
       const cwdParts = cwd.replace(/\\/g, '/').split('/').filter(Boolean);
@@ -155,8 +169,8 @@ export async function scanCodexHome(codexHome) {
     ? [{ rel: 'session_index.jsonl', absPath: indexPath,
          mtime: statSync(indexPath).mtimeMs, size: statSync(indexPath).size }]
     : [];
-
-  const allFiles = [...sessionsDirFiles, ...indexFileMeta, ...skills, ...plugins];
+  const allFiles = [...sessionsDirFiles, ...indexFileMeta, ...skills, ...plugins]
+    .filter((file) => !/\.(?:bak|tmp)$/i.test(file.rel));
 
   return { sessions, sessionIndex, skills, plugins, allFiles };
 }

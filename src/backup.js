@@ -108,6 +108,9 @@ export function listSnapshots(backupDir) {
 
   for (const ent of entries) {
     const name = ent.name;
+    // Remote overwrite copies are internal recovery data, not full Codex
+    // snapshots and must not appear in the restore picker.
+    if (name === '.remote-overwrites') continue;
     const absPath = join(backupDir, name);
 
     let size_bytes = 0;

@@ -6,6 +6,7 @@ import { tmpdir } from 'os';
 import { v2 as webdavServer } from 'webdav-server';
 import { createWebDAVClient } from '../src/webdav-client.js';
 import { buildPlan, applyPlan } from '../src/sync-engine.js';
+import { prepareSync, applySync, REMOTE_MANIFEST } from '../src/sync-service.js';
 
 const PORT = 17999;
 let server;
@@ -110,5 +111,37 @@ describe('e2e: WebDAV sync', () => {
     });
     expect(result.downloaded).toBe(1);
     expect(existsSync(join(localDir, 'sessions/2026/07/17/rollout-remote-new.jsonl'))).toBe(true);
+  });
+
+  test('incremental sync persists a baseline and uploads only new files', async () => {
+    const incrementalDavConfig = { ...davConfig, remote_path: '/codex-sync-incremental' };
+    const dav = createWebDAVClient(incrementalDavConfig);
+    const cfg = {
+      ...CONFIG,
+      codex_home: localDir,
+      machine_id: 'e2e-machine',
+      manifest_path: join(localDir, '.cxsync-manifest.json'),
+      webdav: incrementalDavConfig,
+    };
+
+    await dav.putFile('auth.json', Buffer.from('{"token":"must-not-sync"}\n'));
+    const initial = await prepareSync(cfg);
+    expect(initial.remoteFiles.some((file) => file.rel === 'auth.json')).toBe(false);
+    await applySync(initial);
+    expect(existsSync(cfg.manifest_path)).toBe(true);
+    expect(JSON.parse((await dav.getFile(REMOTE_MANIFEST)).toString()).version).toBe(1);
+
+    mkdirSync(join(localDir, 'skills'), { recursive: true });
+    writeFileSync(join(localDir, 'skills/incremental.txt'), 'new file\n');
+
+    const changed = await prepareSync(cfg);
+    expect(changed.plan.to_upload).toEqual(['skills/incremental.txt']);
+    expect(changed.plan.to_download).toHaveLength(0);
+    await applySync(changed);
+
+    const noOp = await prepareSync(cfg);
+    expect(noOp.plan.to_upload).toHaveLength(0);
+    expect(noOp.plan.to_download).toHaveLength(0);
+    expect(noOp.plan.conflicts).toHaveLength(0);
   });
 });

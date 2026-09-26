@@ -25,6 +25,23 @@ export async function runDoctor(cfg, log) {
     `${indexPath} not found — is Codex installed?`
   ));
 
+  // Session files are JSONL append logs. Detect a partial copy before it can
+  // be pushed to the shared repository and make a later resume fail.
+  try {
+    const { checkSessionIntegrity } = await import('./session-integrity.js');
+    const integrity = await checkSessionIntegrity(cfg.codex_home);
+    checks.push({
+      name: 'Session files consistent',
+      ok: integrity.ok,
+      warning: integrity.ok && integrity.summary.warnings > 0,
+      message: integrity.summary.errors || integrity.summary.warnings || integrity.summary.info
+        ? `${integrity.summary.errors} errors, ${integrity.summary.warnings} warnings, ${integrity.summary.info} info`
+        : null,
+    });
+  } catch (e) {
+    checks.push({ name: 'Session files consistent', ok: false, message: e.message });
+  }
+
   // 3. Codex not running
   const { isCodexRunning } = await import('./process-check.js');
   const running = await isCodexRunning().catch(() => null);

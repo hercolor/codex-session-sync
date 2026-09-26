@@ -29,7 +29,8 @@
   "scripts": {
     "start": "node bin/cxsync.js serve",
     "dev": "node bin/cxsync.js serve --port 7420",
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand"
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
+    "prepublishOnly": "npm test"
   },
   "dependencies": {
     "express": "^4.19.2",
@@ -44,7 +45,7 @@
     "webdav-server": "^2.6.2"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.5.0"
   },
   "keywords": [
     "codex",

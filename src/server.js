@@ -7,6 +7,9 @@ import { readFileSync } from 'fs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = resolve(__dir, '../web');
+const PACKAGE_VERSION = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+).version;
 
 export async function startServer(cfg, log, { openBrowser = true } = {}) {
   const app = express();
@@ -39,7 +42,7 @@ export async function startServer(cfg, log, { openBrowser = true } = {}) {
   app.get('/api/health', async (_req, res) => {
     const { isCodexRunning } = await import('./process-check.js');
     const codex_running = await isCodexRunning().catch(() => null);
-    res.json({ ok: true, codex_running, version: '0.1.0' });
+    res.json({ ok: true, codex_running, version: PACKAGE_VERSION });
   });
 
   // ── 404 fallback ──────────────────────────────────────────────────────────

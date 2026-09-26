@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 // bin/cxsync.js — CLI entry point
 import { Command } from 'commander';
-import { resolve } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { loadConfig, writeExampleConfig, getDefaultConfigPath } from '../src/config.js';
 import { Logger } from '../src/logger.js';
 
 const program = new Command();
+const packageVersion = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+).version;
 
 program
   .name('cxsync')
   .description('Codex session sync — local-first backup and WebDAV sync with Web GUI')
-  .version('0.1.0')
+  .version(packageVersion)
   .option('-c, --config <path>', 'path to config.yml')
   .option('-v, --verbose', 'verbose output');
 
@@ -62,17 +64,11 @@ program
   .action(async () => {
     const cfg = getConfig(program);
     const log = makeLogger(cfg, program);
-    const { buildSyncPlan } = await import('../src/sync-engine.js');
-    const { scanCodexHome } = await import('../src/scanner.js');
-    const { createWebDAVClient } = await import('../src/webdav-client.js');
+    const { prepareSync } = await import('../src/sync-service.js');
 
     log.info('Scanning local state…');
-    const local = await scanCodexHome(cfg.codex_home);
-    const dav = createWebDAVClient(cfg.webdav);
-    log.info('Fetching remote file list…');
-    const remoteFiles = await dav.list(cfg.webdav.remote_path).catch(() => []);
-
-    const plan = buildSyncPlan({ localFiles: local.allFiles, remoteFiles, config: cfg });
+    const state = await prepareSync(cfg);
+    const plan = state.plan;
     console.log(JSON.stringify(plan, null, 2));
   });
 
@@ -82,43 +78,21 @@ program
   .description('Sync local <-> remote')
   .option('--dry-run', 'simulate only')
   .option('--apply', 'write files')
-  .action(async (opts) => {
-    const cfg = getConfig(program);
-    const log = makeLogger(cfg, program);
-    if (!opts.apply && !opts.dryRun) {
-      console.error('Specify --dry-run or --apply'); process.exit(1);
-    }
+  .option('--direction <direction>', 'bidirectional | push | pull')
+  .action((opts) => runSyncCommand(program, opts));
 
-    const { isCodexRunning } = await import('../src/process-check.js');
-    if (await isCodexRunning()) {
-      log.error('Codex is running — close it before syncing');
-      process.exit(3);
-    }
-
-    const { scanCodexHome } = await import('../src/scanner.js');
-    const { createWebDAVClient } = await import('../src/webdav-client.js');
-    const { buildSyncPlan, applyPlan } = await import('../src/sync-engine.js');
-
-    const local = await scanCodexHome(cfg.codex_home);
-    const dav = createWebDAVClient(cfg.webdav);
-    const remoteFiles = await dav.list(cfg.webdav.remote_path).catch(() => []);
-    const plan = buildSyncPlan({ localFiles: local.allFiles, remoteFiles, config: cfg });
-
-    if (opts.dryRun) {
-      console.log('DRY RUN — plan:');
-      console.log(JSON.stringify(plan, null, 2));
-      return;
-    }
-
-    const result = await applyPlan({
-      plan, config: cfg,
-      localBase: cfg.codex_home,
-      remoteBase: cfg.webdav.remote_path,
-      davClient: dav,
-      onProgress: (p) => log.info('sync', p),
-    });
-    console.log('Sync complete:', result);
-  });
+// Repository-style aliases. They intentionally default to apply so a device
+// handoff is one command: close Codex, run `cxsync push` or `cxsync pull`.
+for (const direction of ['push', 'pull']) {
+  program
+    .command(direction)
+    .description(direction === 'push'
+      ? 'Upload local Codex sessions to WebDAV'
+      : 'Download Codex sessions from WebDAV')
+    .option('--dry-run', 'show the plan without writing files')
+    .option('--apply', 'write files (the default)')
+    .action((opts) => runSyncCommand(program, opts, direction));
+}
 
 // ── restore ─────────────────────────────────────────────────────────────────
 program
@@ -159,7 +133,7 @@ program
     let list = Object.values(sessions).flat();
     if (opts.project) list = list.filter(s => s.project === opts.project);
     list.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
-    list.forEach(s => console.log(`[${(s.updated_at || '').slice(0, 10)}] ${(s.project || '(unknown)').padEnd(20)} ${s.thread_name || s.id}`));
+    list.forEach(s => console.log(`${s.id}\t[${(s.updated_at || '').slice(0, 10)}]\t${s.project || '(unknown)'}\t${s.thread_name || ''}`));
   });
 
 // ── merge-providers ─────────────────────────────────────────────────────────
@@ -245,6 +219,49 @@ function makeLogger(cfg, prog) {
     file: cfg.logging.file,
     format: 'text',
   });
+}
+
+async function runSyncCommand(prog, opts, forcedDirection = null) {
+  const cfg = getConfig(prog);
+  const direction = forcedDirection ?? opts.direction;
+  if (direction) {
+    if (!['bidirectional', 'push', 'pull'].includes(direction)) {
+      console.error(`Invalid direction: ${direction}`);
+      process.exitCode = 1;
+      return;
+    }
+    cfg.sync.direction = direction;
+  }
+
+  const isAlias = Boolean(forcedDirection);
+  const apply = Boolean(opts.apply || (isAlias && !opts.dryRun));
+  if (!apply && !opts.dryRun) {
+    console.error('Specify --dry-run or --apply');
+    process.exitCode = 1;
+    return;
+  }
+
+  const log = makeLogger(cfg, prog);
+  const { isCodexRunning } = await import('../src/process-check.js');
+  if (await isCodexRunning()) {
+    log.error('Codex is running — close it before syncing');
+    process.exitCode = 3;
+    return;
+  }
+
+  const { prepareSync, applySync } = await import('../src/sync-service.js');
+  const state = await prepareSync(cfg);
+  const plan = state.plan;
+
+  if (opts.dryRun) {
+    console.log('DRY RUN — plan:');
+    console.log(JSON.stringify({ direction: cfg.sync.direction, baseline: state.baselineSource, plan }, null, 2));
+    return;
+  }
+
+  const result = await applySync(state, { log: (p) => log.info('sync', p) });
+  console.log('Sync complete:', result);
+  if (result.errors?.length) process.exitCode = 1;
 }
 
 program.parse();

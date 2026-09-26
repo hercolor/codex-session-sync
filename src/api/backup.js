@@ -29,7 +29,7 @@ router.delete('/backups/:name', async (req, res) => {
 });
 
 // 备份只包含同步相关的根路径，避免复制巨大的缓存目录
-const BACKUP_INCLUDE = ['sessions', 'session_index.jsonl', 'skills', 'plugins'];
+const BACKUP_INCLUDE = ['sessions', 'session_index.jsonl', 'state_5.sqlite', 'skills', 'plugins'];
 
 router.post('/backup', async (req, res) => {
   const cfg = req.app.locals.cfg;
