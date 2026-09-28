@@ -34,13 +34,13 @@ Codex (CLI / Desktop / IDE extension) keeps all conversation state in a local `~
 ## Installation
 
 ```bash
-npm install -g codex-session-sync
+npm install -g codex-session-sync-cli
 ```
 
 This gives you the `cxsync` command. Or run without installing:
 
 ```bash
-npx codex-session-sync
+npx codex-session-sync-cli
 ```
 
 <details>
@@ -61,8 +61,8 @@ To create a portable package for installation on other machines:
 npm install
 npm test
 npm pack --dry-run       # inspect package contents
-npm pack                 # creates codex-session-sync-<version>.tgz
-npm install -g ./codex-session-sync-<version>.tgz
+npm pack                 # creates codex-session-sync-cli-<version>.tgz
+npm install -g ./codex-session-sync-cli-<version>.tgz
 ```
 
 To publish to the npm registry:
@@ -74,8 +74,8 @@ npm publish --access public
 ```
 
 The `prepublishOnly` hook runs `npm test` before publishing. After publication,
-other machines can use `npm install -g codex-session-sync` or
-`npx codex-session-sync`.
+other machines can use `npm install -g codex-session-sync-cli` or
+`npx codex-session-sync-cli`.
 
 ## Quick start
 

@@ -34,13 +34,13 @@ Codex（CLI / Desktop / IDE 插件）把所有会话状态存在本地 `~/.codex
 ## 安装
 
 ```bash
-npm install -g codex-session-sync
+npm install -g codex-session-sync-cli
 ```
 
 安装后即可使用 `cxsync` 命令。也可以免安装直接运行：
 
 ```bash
-npx codex-session-sync
+npx codex-session-sync-cli
 ```
 
 <details>
@@ -61,8 +61,8 @@ npm install -g .
 npm install
 npm test
 npm pack --dry-run       # 先检查将要进入压缩包的文件
-npm pack                 # 生成 codex-session-sync-<version>.tgz
-npm install -g ./codex-session-sync-<version>.tgz
+npm pack                 # 生成 codex-session-sync-cli-<version>.tgz
+npm install -g ./codex-session-sync-cli-<version>.tgz
 ```
 
 如果要发布到 npm：
@@ -74,7 +74,7 @@ npm publish --access public
 ```
 
 发布前会自动执行 `prepublishOnly` 中的 `npm test`。发布后其他设备可直接执行
-`npm install -g codex-session-sync`，或使用 `npx codex-session-sync`。
+`npm install -g codex-session-sync-cli`，或使用 `npx codex-session-sync-cli`。
 
 ## 快速开始
 

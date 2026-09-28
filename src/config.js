@@ -84,8 +84,8 @@ export function validateConfig(cfg) {
     errors.push('sync.time_tolerance_seconds must be a non-negative number');
   }
   if (!['never'].includes(sync.delete_policy)) errors.push('sync.delete_policy currently supports only never');
-  if (!['all', 'last_date_only'].includes(sync.session_mode)) {
-    errors.push('sync.session_mode must be all or last_date_only');
+  if (sync.session_mode !== 'all') {
+    errors.push('sync.session_mode must be all (date filtering is not implemented)');
   }
 
   const policy = cfg.conflict?.policy;

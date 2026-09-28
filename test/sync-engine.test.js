@@ -162,7 +162,7 @@ describe('buildPlan', () => {
   test('baseline hashes survive different endpoint mtimes', () => {
     const plan = buildPlan({
       localFiles:  { 'sessions/a.jsonl': { mtime: 9000, size: 100, sha256: 'same' } },
-      remoteFiles: { 'sessions/a.jsonl': { mtime: 10000, size: 100 } },
+      remoteFiles: { 'sessions/a.jsonl': { mtime: 10000, size: 100, sha256: 'same' } },
       baseline: {
         files: {
           'sessions/a.jsonl': {
@@ -181,7 +181,10 @@ describe('buildPlan', () => {
   test('direction push suppresses downloads and resolves conflicts locally', () => {
     const config = { ...BASE_CONFIG, sync: { ...BASE_CONFIG.sync, direction: 'push' } };
     const plan = buildPlan({
-      localFiles:  { 'sessions/local.jsonl': f(3000) },
+      localFiles:  {
+        'sessions/local.jsonl': f(3000),
+        'sessions/shared.jsonl': f(3000, 120),
+      },
       remoteFiles: { 'sessions/remote.jsonl': f(1000), 'sessions/shared.jsonl': f(3000, 120) },
       baseline: {
         files: {

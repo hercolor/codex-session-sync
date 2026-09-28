@@ -95,7 +95,7 @@ sync:
   time_tolerance_seconds: 2
   equal_mtime_action: skip    # skip | prefer_local | prefer_cloud | manual_abort
   delete_policy: never
-  session_mode: all             # all sessions; date filtering is opt-in later
+  session_mode: all             # all sessions; date filtering is not implemented
 conflict:
   policy: manual_abort        # manual_abort | prefer_cloud | prefer_local | prefer_newer_mtime
 backup:
