@@ -1,7 +1,11 @@
 // src/sync-engine.js — 同步计划生成与执行（纯逻辑层，便于测试）
 import { createHash } from 'crypto';
-import { readFileSync, writeFileSync, copyFileSync, mkdirSync, existsSync } from 'fs';
-import { dirname, join } from 'path';
+import {
+  readFileSync, writeFileSync, copyFileSync, mkdirSync, existsSync,
+  renameSync, unlinkSync, lstatSync,
+} from 'fs';
+import { dirname, join, resolve } from 'path';
+import { randomUUID } from 'crypto';
 
 // ─── 工具函数 ────────────────────────────────────────────────────────────────
 
@@ -263,6 +267,9 @@ export async function applyPlan({
   remoteBase,
   webdavClient,
   davClient,            // 别名参数，兼容调用方
+  uploadContents = {},
+  downloadContents = {},
+  writeLocalFile = atomicWriteFileSync,
   onProgress = () => {},
 }) {
   webdavClient = webdavClient ?? davClient;
@@ -311,9 +318,10 @@ export async function applyPlan({
     onProgress({ file: rel, action: 'upload', n, total });
     try {
       if (!isSafeRelativePath(rel)) throw new Error(`Unsafe relative path: ${rel}`);
+      assertNoSymlinkInPath(localBase, rel);
       const localPath = join(localBase, rel);
       if (backupEnabled) await backupRemote(webdavClient, rel, config, remoteBackupRun);
-      const buf = readFileSync(localPath);
+      const buf = uploadContents[rel] ?? readFileSync(localPath);
       await webdavClient.putFile(rel, buf);
       uploaded++;
       uploaded_files.push(rel);
@@ -328,11 +336,14 @@ export async function applyPlan({
     onProgress({ file: rel, action: 'download', n, total });
     try {
       if (!isSafeRelativePath(rel)) throw new Error(`Unsafe relative path: ${rel}`);
+      assertNoSymlinkInPath(localBase, rel);
       const localPath = join(localBase, rel);
-      const buf = await webdavClient.getFile(rel);
+      const buf = Object.hasOwn(downloadContents, rel)
+        ? downloadContents[rel]
+        : await webdavClient.getFile(rel);
       if (backupEnabled) backupLocal(localPath, config);
       mkdirSync(dirname(localPath), { recursive: true });
-      writeFileSync(localPath, buf);
+      writeLocalFile(localPath, buf);
       downloaded++;
       downloaded_files.push(rel);
     } catch (err) {
@@ -341,6 +352,45 @@ export async function applyPlan({
   }
 
   return { uploaded, downloaded, skipped, errors, uploaded_files, downloaded_files };
+}
+
+function assertNoSymlinkInPath(localBase, rel) {
+  let current = resolve(localBase);
+  try {
+    if (lstatSync(current).isSymbolicLink()) {
+      throw new Error(`Refusing to write through a symbolic link: ${current}`);
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  for (const part of rel.split('/')) {
+    current = join(current, part);
+    try {
+      if (lstatSync(current).isSymbolicLink()) {
+        throw new Error(`Refusing to write through a symbolic link: ${current}`);
+      }
+    } catch (error) {
+      if (error.code === 'ENOENT') break;
+      throw error;
+    }
+  }
+}
+
+/** Write beside the destination, then replace it so interrupted downloads do
+ * not leave a truncated session file in the Codex home. */
+export function atomicWriteFileSync(localPath, data, {
+  write = writeFileSync,
+  rename = renameSync,
+  unlink = unlinkSync,
+} = {}) {
+  const temporaryPath = `${localPath}.cxsync-${process.pid}-${randomUUID()}.tmp`;
+  try {
+    write(temporaryPath, data, { flag: 'wx' });
+    rename(temporaryPath, localPath);
+  } catch (error) {
+    try { unlink(temporaryPath); } catch { /* no temporary file to remove */ }
+    throw error;
+  }
 }
 
 // ─── 冲突解决 ─────────────────────────────────────────────────────────────────

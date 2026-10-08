@@ -1,9 +1,15 @@
 codex_home: ~/.codex
+# Claude Code project conversations and memory are synced separately.
+claude_home: ~/.claude
 machine_id: my-machine
 # Local file-level incremental baseline. Keep this outside codex_home.
 # On a new device, existing remote files are content-checked once before the
 # local incremental baseline is created.
 manifest_path: ~/.codex-session-sync/manifest.json
+# Independent local baseline for Claude Code. Keep it outside claude_home.
+claude_manifest_path: ~/.codex-session-sync/claude-manifest.json
+# Optional: defaults to a sibling of webdav.remote_path (e.g. /codex-sync-claude).
+# claude_remote_path: /claude-sync
 
 sync:
   mode: cold
@@ -29,8 +35,8 @@ webdav:
   username: your_username
   password: your_password
   remote_path: /codex-sync
-  # The internal .cxsync-manifest.json is kept at this path on the server
-  # and is excluded from the user file sync plan.
+  # Each client keeps its own internal .cxsync-manifest.json at its remote path.
+  # Both repositories use these same WebDAV credentials.
 
 server:
   port: 7420

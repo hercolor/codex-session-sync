@@ -1,9 +1,12 @@
 // src/sync-service.js - shared incremental sync workflow for CLI and API
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { scanCodexHome } from './scanner.js';
+import { isClaudeSyncablePath, scanClaudeHome } from './claude-scanner.js';
 import { createWebDAVClient } from './webdav-client.js';
 import { buildSyncPlan, applyPlan } from './sync-engine.js';
+import { mergeSessionIndexBuffers } from './session-index.js';
 import {
   buildManifest,
   getManifestPath,
@@ -48,10 +51,10 @@ function isNotFound(error) {
   return status === 404 || /\b404\b|not found/i.test(error?.message ?? '');
 }
 
-function userFiles(files) {
+function userFiles(files, client = 'codex') {
   return (files ?? []).filter((entry) =>
     entry?.rel !== REMOTE_MANIFEST &&
-    isSyncablePath(entry?.rel) &&
+    (client === 'claude' ? isClaudeSyncablePath(entry?.rel) : isSyncablePath(entry?.rel)) &&
     !/\.(?:bak|tmp)$/i.test(entry?.rel ?? '')
   ).map((entry) => {
     if (!isSafeRelativePath(entry?.rel)) {
@@ -121,6 +124,25 @@ function hashBuffer(data) {
   return createHash('sha256').update(data).digest('hex');
 }
 
+function withoutSessionIndex(plan) {
+  const isIndex = (rel) => rel === 'session_index.jsonl';
+  return {
+    ...plan,
+    to_upload: plan.to_upload.filter((rel) => !isIndex(rel)),
+    to_download: plan.to_download.filter((rel) => !isIndex(rel)),
+    conflicts: plan.conflicts.filter((conflict) => !isIndex(conflict.rel)),
+    unchanged: plan.unchanged.filter((rel) => !isIndex(rel)),
+  };
+}
+
+function addIndexMergeToPlan(plan, merge) {
+  if (!merge?.buffer) return plan;
+  const next = { ...plan };
+  if (merge.remoteChanged) next.to_upload = [...next.to_upload, 'session_index.jsonl'];
+  if (merge.localChanged) next.to_download = [...next.to_download, 'session_index.jsonl'];
+  return next;
+}
+
 function manifestHasHashes(manifest) {
   return Object.values(manifest?.files ?? {}).some((entry) => {
     const local = entry?.local ?? (entry && !('local' in entry || 'remote' in entry) ? entry : null);
@@ -167,9 +189,13 @@ async function addRemoteHashes(dav, files, baseline, { localByRel, transferred, 
  * retained as repository metadata and carries content hashes across machines.
  */
 export async function prepareSync(cfg) {
-  const local = await scanCodexHome(cfg.codex_home);
+  const client = cfg.sync_client ?? 'codex';
+  const localHome = cfg.local_home ?? cfg.codex_home;
+  const local = client === 'claude'
+    ? await scanClaudeHome(localHome)
+    : await scanCodexHome(localHome);
   const dav = createWebDAVClient(cfg.webdav);
-  const remoteFilesRaw = userFiles(await dav.list());
+  const remoteFilesRaw = userFiles(await dav.list(), client);
   const remoteManifest = await readRemoteManifest(dav);
   const manifestPath = getManifestPath({
     manifest_path: cfg.manifest_path,
@@ -201,12 +227,41 @@ export async function prepareSync(cfg) {
     ? await addRemoteHashes(dav, remoteFilesRaw, hashBaseline, { force: forceRemoteHashes })
     : remoteFilesRaw;
   const baselineSource = localManifest ? 'local' : 'none';
-  const plan = buildSyncPlan({
+  const direction = ['push', 'pull', 'bidirectional'].includes(cfg.sync?.direction)
+    ? cfg.sync.direction
+    : 'bidirectional';
+  const filePlan = buildSyncPlan({
     localFiles,
     remoteFiles,
     baseline,
     config: cfg,
   });
+  // session_index.jsonl contains independent records from each device. Merge
+  // it by id instead of letting the ordinary whole-file conflict policy pick
+  // one device's index and discard the other's new sessions.
+  let sessionIndexMerge = null;
+  let plan = filePlan;
+  if (client === 'codex' && direction === 'bidirectional') {
+    const localIndexFile = local.allFiles.find((file) => file.rel === 'session_index.jsonl');
+    const remoteIndexFile = remoteFilesRaw.find((file) => file.rel === 'session_index.jsonl');
+    let localIndexData = null;
+    let remoteIndexData = null;
+    if (localIndexFile) {
+      try { localIndexData = readFileSync(localIndexFile.absPath); }
+      catch (error) { throw new Error(`Unable to read local session_index.jsonl: ${error.message}`); }
+    }
+    if (remoteIndexFile) {
+      try { remoteIndexData = Buffer.from(await dav.getFile('session_index.jsonl')); }
+      catch (error) { throw new Error(`Unable to read remote session_index.jsonl: ${error.message}`); }
+    }
+    const mergedIndex = mergeSessionIndexBuffers(localIndexData, remoteIndexData);
+    sessionIndexMerge = mergedIndex ? {
+      buffer: mergedIndex,
+      localChanged: !localIndexData || !localIndexData.equals(mergedIndex),
+      remoteChanged: !remoteIndexData || !remoteIndexData.equals(mergedIndex),
+    } : null;
+    plan = addIndexMergeToPlan(withoutSessionIndex(filePlan), sessionIndexMerge);
+  }
 
   return {
     cfg,
@@ -219,6 +274,7 @@ export async function prepareSync(cfg) {
     baseline,
     baselineSource,
     compareCrossDevice,
+    sessionIndexMerge,
     plan,
   };
 }
@@ -230,12 +286,20 @@ export async function prepareSync(cfg) {
  */
 export async function applySync(state, { onProgress = () => {}, log } = {}) {
   const { cfg, dav, manifestPath, plan } = state;
+  const client = cfg.sync_client ?? 'codex';
+  const localHome = cfg.local_home ?? cfg.codex_home;
   const result = await applyPlan({
     plan,
     config: cfg,
-    localBase: cfg.codex_home,
+    localBase: localHome,
     remoteBase: cfg.webdav.remote_path,
     davClient: dav,
+    uploadContents: state.sessionIndexMerge?.remoteChanged
+      ? { 'session_index.jsonl': state.sessionIndexMerge.buffer }
+      : undefined,
+    downloadContents: state.sessionIndexMerge?.localChanged
+      ? { 'session_index.jsonl': state.sessionIndexMerge.buffer }
+      : undefined,
     onProgress: (progress) => {
       log?.(progress);
       onProgress(progress);
@@ -247,7 +311,9 @@ export async function applySync(state, { onProgress = () => {}, log } = {}) {
     return { ...result, manifest_updated: false, manifest_path: manifestPath };
   }
 
-  const refreshedLocal = await scanCodexHome(cfg.codex_home);
+  const refreshedLocal = client === 'claude'
+    ? await scanClaudeHome(localHome)
+    : await scanCodexHome(localHome);
   // A successful apply writes hashes into the manifest. This gives the next
   // device a content-based shared baseline even when its filesystem mtime
   // differs from the source device.
@@ -263,7 +329,7 @@ export async function applySync(state, { onProgress = () => {}, log } = {}) {
       state.localManifest,
     );
   const localByRel = new Map(localFiles.map((file) => [file.rel, file]));
-  const refreshedRemote = userFiles(await dav.list());
+  const refreshedRemote = userFiles(await dav.list(), client);
   // Reuse hashes fetched during the initial cross-device scan for files that
   // were not transferred. Only the explicit hash comparison mode re-reads
   // every remote body after the apply.

@@ -23,6 +23,10 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .btn-ghost:hover{border-color:var(--accent);color:var(--accent);opacity:1}
 .btn-danger{background:var(--red)}
 .btn-success{background:var(--green);color:#0d0d1a}
+.client-switch{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:12px}
+.client-switch button{border-radius:0;background:transparent;color:var(--text2);padding:7px 14px;font-size:13px}
+.client-switch button+button{border-left:1px solid var(--border)}
+.client-switch button.active{background:var(--accent);color:#fff}
 input,select,textarea{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);
   color:var(--text);font:inherit;padding:7px 10px;width:100%;outline:none;transition:border-color .15s}
 input:focus,select:focus,textarea:focus{border-color:var(--accent)}
@@ -462,10 +466,13 @@ async function renderSessions(main) {
 // ══════════════════════════════════════════════════════════════════════════
 async function renderSync(main) {
   main.innerHTML = '';
+  let selectedClient = 'codex';
+  let configuredRemotePath = '/codex-sync';
+  let configuredClaudeRemotePath = '';
 
   // WebDAV status card
   const davCard = el('div', {class:'card mb-16'});
-  davCard.appendChild(el('div', {class:'card-title'}, 'WebDAV 连接'));
+  davCard.appendChild(el('div', {class:'card-title'}, 'WebDAV 连接测试'));
 
   const statusRow = el('div', {class:'flex items-center gap-8 mb-12'});
   const statusDot = el('span', {class:'dot dot-yellow'});
@@ -479,19 +486,32 @@ async function renderSync(main) {
   const passIn = el('input',{type:'password', placeholder:'密码'});
   const pathIn = el('input',{type:'text', placeholder:'/codex-sync'});
 
+  const syncTarget = el('div', {class:'text-muted text-sm mb-8'});
+  function updateSyncTarget() {
+    const base = '/' + configuredRemotePath.split('/').filter(Boolean).join('/');
+    const target = selectedClient === 'claude'
+      ? configuredClaudeRemotePath || (base === '/' ? '/claude-sync' : `${base}-claude`)
+      : base;
+    syncTarget.textContent = `同步目录：${target}`;
+  }
+  updateSyncTarget();
+
   // load current config
   GET('/config').then(cfg => {
     const w = cfg.webdav || {};
     urlIn.value  = w.url || '';
     userIn.value = w.username || '';
     pathIn.value = w.remote_path || '/codex-sync';
+    configuredRemotePath = w.remote_path || '/codex-sync';
+    configuredClaudeRemotePath = cfg.claude_remote_path || '';
+    updateSyncTarget();
   }).catch(()=>{});
 
   form.append(
     el('div',{}, el('label',{},'WebDAV URL'), urlIn),
     el('div',{}, el('label',{},'用户名'), userIn),
     el('div',{}, el('label',{},'密码'), passIn),
-    el('div',{}, el('label',{},'远端路径'), pathIn),
+    el('div',{}, el('label',{},'测试用基础路径'), pathIn),
   );
 
   const testBtn = el('button',{class:'btn btn-ghost btn-sm', style:'margin-top:20px', onclick: async () => {
@@ -500,7 +520,8 @@ async function renderSync(main) {
     statusText.textContent = '连接中…';
     try {
       const r = await POST('/config/webdav/test', {
-        url: urlIn.value, username: userIn.value, password: passIn.value, remote_path: pathIn.value
+        url: urlIn.value, username: userIn.value, password: passIn.value,
+        remote_path: pathIn.value, client: selectedClient
       });
       if (r.ok) {
         statusDot.className = 'dot dot-green';
@@ -523,12 +544,30 @@ async function renderSync(main) {
   // Plan + Sync card
   const syncCard = el('div', {class:'card'});
   syncCard.appendChild(el('div', {class:'card-title'}, '同步操作'));
+  const clientSwitch = el('div', {class:'client-switch', role:'group', 'aria-label':'同步客户端'});
+  for (const [client, label] of [['codex', 'Codex'], ['claude', 'Claude Code']]) {
+    const button = el('button', {type:'button', class: client === selectedClient ? 'active' : '', 'aria-pressed':String(client === selectedClient)}, label);
+    button.addEventListener('click', () => {
+      selectedClient = client;
+      updateSyncTarget();
+      statusDot.className = 'dot dot-yellow';
+      statusText.textContent = '未检测';
+      for (const item of clientSwitch.children) {
+        const active = item === button;
+        item.classList.toggle('active', active);
+        item.setAttribute('aria-pressed', String(active));
+      }
+      planArea.style.display = 'none';
+      progressWrap.style.display = 'none';
+    });
+    clientSwitch.appendChild(button);
+  }
 
   const planArea = el('div', {class:'mt-8', style:'display:none'});
   const planBtn = el('button', {class:'btn btn-ghost', onclick: async () => {
     planBtn.disabled=true; planBtn.textContent='计划中…';
     try {
-      const { plan } = await POST('/sync/plan');
+      const { plan } = await POST('/sync/plan', { client: selectedClient });
       planArea.style.display = '';
       planArea.innerHTML = '';
       const summary = [
@@ -571,7 +610,7 @@ async function renderSync(main) {
   const applyBtn = el('button', {class:'btn', onclick: async () => {
     applyBtn.disabled=true; applyBtn.textContent='同步中…';
     progressWrap.style.display=''; logEl.innerHTML=''; bar.style.width='0%'; summary.textContent='';
-    const result = await sseApply('/api/sync/apply', {}, {
+    const result = await sseApply('/api/sync/apply', { client: selectedClient }, {
       logEl, barEl: bar,
       onDone: r => {
         const errorCount = Array.isArray(r.errors) ? r.errors.length : (r.errors || 0);
@@ -587,7 +626,7 @@ async function renderSync(main) {
 
   const btnRow = el('div',{class:'flex gap-8 mt-12'});
   btnRow.append(planBtn, applyBtn);
-  syncCard.append(btnRow, planArea, progressWrap);
+  syncCard.append(clientSwitch, syncTarget, btnRow, planArea, progressWrap);
   main.appendChild(syncCard);
 }
 

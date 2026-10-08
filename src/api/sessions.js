@@ -54,6 +54,10 @@ router.patch('/:id', async (req, res) => {
   const { thread_name } = req.body;
   if (!thread_name) return res.status(400).json({ error: 'thread_name required' });
   try {
+    // Renaming updates both session_index.jsonl and the local SQLite database.
+    if (await isCodexRunning()) {
+      return res.status(409).json({ error: 'Codex is running — close it before renaming sessions' });
+    }
     const result = renameSession(cfg.codex_home, req.params.id, thread_name);
     log.info(`Session renamed: ${req.params.id}`, result);
     res.json({ ok: true, ...result });

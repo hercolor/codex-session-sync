@@ -2,7 +2,7 @@
 // bin/cxsync.js — CLI entry point
 import { Command } from 'commander';
 import { existsSync, readFileSync } from 'fs';
-import { loadConfig, writeExampleConfig, getDefaultConfigPath } from '../src/config.js';
+import { loadConfig, writeExampleConfig, getDefaultConfigPath, configForClient } from '../src/config.js';
 import { Logger } from '../src/logger.js';
 
 const program = new Command();
@@ -12,7 +12,7 @@ const packageVersion = JSON.parse(
 
 program
   .name('cxsync')
-  .description('Codex session sync — local-first backup and WebDAV sync with Web GUI')
+  .description('Codex and Claude Code session sync via WebDAV')
   .version(packageVersion)
   .option('-c, --config <path>', 'path to config.yml')
   .option('-v, --verbose', 'verbose output');
@@ -61,8 +61,9 @@ program
 program
   .command('plan')
   .description('Build sync plan (no changes)')
-  .action(async () => {
-    const cfg = getConfig(program);
+  .option('--client <client>', 'codex | claude', 'codex')
+  .action(async (opts) => {
+    const cfg = configForClient(getConfig(program), opts.client);
     const log = makeLogger(cfg, program);
     const { prepareSync } = await import('../src/sync-service.js');
 
@@ -79,6 +80,7 @@ program
   .option('--dry-run', 'simulate only')
   .option('--apply', 'write files')
   .option('--direction <direction>', 'bidirectional | push | pull')
+  .option('--client <client>', 'codex | claude', 'codex')
   .action((opts) => runSyncCommand(program, opts));
 
 // Repository-style aliases. They intentionally default to apply so a device
@@ -87,10 +89,11 @@ for (const direction of ['push', 'pull']) {
   program
     .command(direction)
     .description(direction === 'push'
-      ? 'Upload local Codex sessions to WebDAV'
-      : 'Download Codex sessions from WebDAV')
+      ? 'Upload local client sessions to WebDAV'
+      : 'Download client sessions from WebDAV')
     .option('--dry-run', 'show the plan without writing files')
     .option('--apply', 'write files (the default)')
+    .option('--client <client>', 'codex | claude', 'codex')
     .action((opts) => runSyncCommand(program, opts, direction));
 }
 
@@ -125,12 +128,18 @@ program
   .command('sessions')
   .description('List local sessions')
   .option('--project <name>', 'filter by project name')
+  .option('--client <client>', 'codex | claude', 'codex')
   .action(async (opts) => {
-    const cfg = getConfig(program);
-    const { scanCodexHome } = await import('../src/scanner.js');
-    const { sessions } = await scanCodexHome(cfg.codex_home);
-    // sessions is { [cwd]: session[] } — flatten to array
-    let list = Object.values(sessions).flat();
+    const cfg = configForClient(getConfig(program), opts.client);
+    let list;
+    if (cfg.sync_client === 'claude') {
+      const { scanClaudeHome } = await import('../src/claude-scanner.js');
+      ({ sessions: list } = await scanClaudeHome(cfg.local_home));
+    } else {
+      const { scanCodexHome } = await import('../src/scanner.js');
+      const { sessions } = await scanCodexHome(cfg.local_home);
+      list = Object.values(sessions).flat();
+    }
     if (opts.project) list = list.filter(s => s.project === opts.project);
     list.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
     list.forEach(s => console.log(`${s.id}\t[${(s.updated_at || '').slice(0, 10)}]\t${s.project || '(unknown)'}\t${s.thread_name || ''}`));
@@ -222,7 +231,7 @@ function makeLogger(cfg, prog) {
 }
 
 async function runSyncCommand(prog, opts, forcedDirection = null) {
-  const cfg = getConfig(prog);
+  const cfg = configForClient(getConfig(prog), opts.client);
   const direction = forcedDirection ?? opts.direction;
   if (direction) {
     if (!['bidirectional', 'push', 'pull'].includes(direction)) {
@@ -242,9 +251,12 @@ async function runSyncCommand(prog, opts, forcedDirection = null) {
   }
 
   const log = makeLogger(cfg, prog);
-  const { isCodexRunning } = await import('../src/process-check.js');
-  if (await isCodexRunning()) {
-    log.error('Codex is running — close it before syncing');
+  const { isCodexRunning, isClaudeRunning } = await import('../src/process-check.js');
+  const clientRunning = cfg.sync_client === 'claude'
+    ? await isClaudeRunning()
+    : await isCodexRunning();
+  if (clientRunning) {
+    log.error(`${cfg.sync_client === 'claude' ? 'Claude Code' : 'Codex'} is running — close it before syncing`);
     process.exitCode = 3;
     return;
   }

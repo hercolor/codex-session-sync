@@ -43,8 +43,10 @@ Writes new name into `session_index.jsonl`.
 
 ## Sync
 
-Sync uses file-level incremental comparison by default. This device's baseline
-is stored at `manifest_path` (default: `~/.codex-session-sync/manifest.json`).
+Sync uses file-level incremental comparison by default. The optional request
+field `client` is `codex` (default) or `claude`. Codex uses `manifest_path`
+(default: `~/.codex-session-sync/manifest.json`); Claude Code uses
+`claude_manifest_path` (default: `~/.codex-session-sync/claude-manifest.json`).
 When the device has no local baseline, the planner compares current files
 directly; existing remote files are content-checked once so cross-device mtime
 differences cannot silently overwrite a session. After a successful apply, the
@@ -52,9 +54,16 @@ remote observations are refreshed and the local manifest is replaced atomically
 with the observed metadata for each relative path.
 
 The remote baseline is retained as the internal
-`.cxsync-manifest.json` file at the root of `webdav.remote_path`. It is not
-included in `to_upload`, `to_download`, `conflicts`, or `unchanged`, and is
+`.cxsync-manifest.json` file at each client's WebDAV root. Codex uses
+`webdav.remote_path`; Claude Code uses `claude_remote_path`, or a sibling named
+`<webdav.remote_path>-claude` by default. Both use the same WebDAV credentials.
+The internal manifest is not included in `to_upload`, `to_download`,
+`conflicts`, or `unchanged`, and is
 never treated as a user session file.
+
+Claude Code sync includes project `UUID.jsonl` sessions, project `memory/**`,
+and files under session UUID directories' `subagents/**` and `tool-results/**`.
+Credentials, settings, global history, and other local state are excluded.
 
 `sync.direction` controls authority when building the plan:
 
@@ -64,14 +73,21 @@ never treated as a user session file.
 | `push` | Local is authoritative; uploads are planned, while remote-only files and remote changes are left untouched |
 | `pull` | Remote is authoritative; remote versions are downloaded over matching local files, with local backup enabled by default |
 
+In bidirectional mode, `session_index.jsonl` is merged by `id`, so new
+sessions from both devices remain available to `codex resume`. Invalid JSONL or
+an entry without a string `id` aborts preparation with the offending line
+number. `push` and `pull` propagate the complete index from their authoritative
+side.
+
 ### POST /api/sync/plan
 Build a sync plan without writing any files.
 
-Request: `{}` (uses current config)
+Request: `{}` for Codex, or `{ "client": "claude" }` for Claude Code.
 
 Response:
 ```json
 {
+  "client": "codex",
   "incremental": true,
   "baseline": "local",
   "plan": {
@@ -91,13 +107,14 @@ comparing the current observations with the manifest baseline. The plan is
 read-only; it does not update either manifest.
 
 ### POST /api/sync/apply
-Execute sync. Streams SSE events on the same connection.
+Execute sync. Send `{}` for Codex or `{ "client": "claude" }` for Claude Code.
+The selected client must be stopped. Streams SSE events on the same connection.
 
 `Content-Type: text/event-stream`
 
 Events:
 ```
-data: {"type":"start","total":5,"incremental":true,"baseline":"local"}
+data: {"type":"start","total":5,"client":"codex","incremental":true,"baseline":"local"}
 data: {"type":"progress","file":"sessions/...","action":"upload","n":1,"total":5}
 data: {"type":"conflict","file":"...","policy":"manual_abort"}
 data: {"type":"done","uploaded":3,"downloaded":0,"skipped":2,"errors":0}
@@ -147,9 +164,9 @@ Returns current config (passwords masked).
 ### PUT /api/config
 Update config. Only provided keys are updated.
 
-`manifest_path` may be supplied to relocate the local incremental baseline.
-The remote manifest name and location are fixed at
-`webdav.remote_path/.cxsync-manifest.json`.
+`manifest_path`, `claude_home`, `claude_manifest_path`, and
+`claude_remote_path` may be supplied. The remote manifest name is always
+`.cxsync-manifest.json` within the selected client's WebDAV directory.
 
 ---
 
@@ -157,12 +174,12 @@ The remote manifest name and location are fixed at
 
 ### POST /api/config/webdav/test
 ```json
-{ "url": "https://...", "username": "u", "password": "p", "remote_path": "/codex-sync" }
+{ "url": "https://...", "username": "u", "password": "p", "remote_path": "/codex-sync", "client": "claude" }
 ```
 
 Response:
 ```json
-{ "ok": true, "latency_ms": 42, "free_bytes": 10737418240 }
+{ "ok": true, "latency_ms": 42 }
 ```
 or `{ "ok": false, "error": "401 Unauthorized" }`
 

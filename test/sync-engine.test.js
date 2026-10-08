@@ -1,9 +1,9 @@
 // test/sync-engine.test.js
 import { describe, test, expect } from '@jest/globals';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { applyPlan, buildPlan } from '../src/sync-engine.js';
+import { applyPlan, atomicWriteFileSync, buildPlan } from '../src/sync-engine.js';
 
 const BASE_CONFIG = {
   sync: { compare: 'mtime', time_tolerance_seconds: 2, equal_mtime_action: 'skip' },
@@ -371,6 +371,108 @@ describe('applyPlan', () => {
     } finally {
       rmSync(localBase, { recursive: true, force: true });
       rmSync(backupDir, { recursive: true, force: true });
+    }
+  });
+
+  test('downloads through a same-directory temporary file and replaces the destination', async () => {
+    const localBase = mkdtempSync(join(tmpdir(), 'cxsync-atomic-download-'));
+    const rel = 'sessions/atomic.jsonl';
+    const localPath = join(localBase, rel);
+    mkdirSync(join(localBase, 'sessions'), { recursive: true });
+    writeFileSync(localPath, 'old complete content');
+
+    try {
+      const result = await applyPlan({
+        plan: { to_upload: [], to_download: [rel], conflicts: [], unchanged: [] },
+        config: { backup: { enabled: false } },
+        localBase,
+        remoteBase: '/sync',
+        webdavClient: { async getFile() { return Buffer.from('new complete content'); } },
+      });
+
+      expect(result.errors).toHaveLength(0);
+      expect(readFileSync(localPath, 'utf8')).toBe('new complete content');
+      expect(readdirSync(join(localBase, 'sessions'))).toEqual(['atomic.jsonl']);
+    } finally {
+      rmSync(localBase, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps the existing file when atomic replacement fails', async () => {
+    const localBase = mkdtempSync(join(tmpdir(), 'cxsync-atomic-failure-'));
+    const rel = 'sessions/kept.jsonl';
+    const localPath = join(localBase, rel);
+    mkdirSync(join(localBase, 'sessions'), { recursive: true });
+    writeFileSync(localPath, 'old complete content');
+
+    try {
+      const result = await applyPlan({
+        plan: { to_upload: [], to_download: [rel], conflicts: [], unchanged: [] },
+        config: { backup: { enabled: false } },
+        localBase,
+        remoteBase: '/sync',
+        webdavClient: { async getFile() { return Buffer.from('new content'); } },
+        writeLocalFile(path, data) {
+          atomicWriteFileSync(path, data, {
+            write() { throw new Error('simulated disk write failure'); },
+          });
+        },
+      });
+
+      expect(result.errors).toHaveLength(1);
+      expect(readFileSync(localPath, 'utf8')).toBe('old complete content');
+    } finally {
+      rmSync(localBase, { recursive: true, force: true });
+    }
+  });
+
+  test('does not follow a local symbolic link while downloading', async () => {
+    const localBase = mkdtempSync(join(tmpdir(), 'cxsync-linked-home-'));
+    const outside = mkdtempSync(join(tmpdir(), 'cxsync-linked-outside-'));
+    const rel = 'projects/-tmp-project/memory/MEMORY.md';
+    mkdirSync(join(localBase, 'projects'), { recursive: true });
+    symlinkSync(outside, join(localBase, 'projects/-tmp-project'));
+
+    try {
+      const result = await applyPlan({
+        plan: { to_upload: [], to_download: [rel], conflicts: [], unchanged: [] },
+        config: { backup: { enabled: false } },
+        localBase,
+        remoteBase: '/sync',
+        webdavClient: { async getFile() { return Buffer.from('remote memory'); } },
+      });
+
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].reason).toMatch(/symbolic link/);
+      expect(existsSync(join(outside, 'memory/MEMORY.md'))).toBe(false);
+    } finally {
+      rmSync(localBase, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test('does not follow a symbolic link used as the local root', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'cxsync-linked-root-'));
+    const outside = mkdtempSync(join(tmpdir(), 'cxsync-linked-outside-'));
+    const localBase = join(parent, 'claude');
+    const rel = 'projects/-tmp-project/memory/MEMORY.md';
+    symlinkSync(outside, localBase);
+
+    try {
+      const result = await applyPlan({
+        plan: { to_upload: [], to_download: [rel], conflicts: [], unchanged: [] },
+        config: { backup: { enabled: false } },
+        localBase,
+        remoteBase: '/sync',
+        webdavClient: { async getFile() { return Buffer.from('remote memory'); } },
+      });
+
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].reason).toMatch(/symbolic link/);
+      expect(existsSync(join(outside, rel))).toBe(false);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
     }
   });
 });

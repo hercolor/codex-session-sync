@@ -1,4 +1,4 @@
-// src/process-check.js — 检测和终止 Codex 进程
+// src/process-check.js — 检测会话客户端进程并终止 Codex 进程
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
@@ -10,57 +10,79 @@ export const CODEX_PROCESS_NAMES = {
   posix: ['codex'],
 };
 
+export const CLAUDE_PROCESS_NAMES = {
+  windows: ['claude.exe', 'claude'],
+  posix: ['claude', 'claude.exe'],
+};
+
 const isWindows = process.platform === 'win32';
 
 /**
- * 检测 Codex 是否正在运行
- * - Windows：解析 `tasklist /fo csv /nh` 输出
- * - macOS/Linux：使用 `pgrep -x codex`
- * @returns {Promise<boolean>}
+ * @param {{ platform?: string, exec?: (command: string) => Promise<{stdout: string}> }} options
+ * @returns {Promise<{state: 'running'|'stopped'|'unknown', method: string, error?: string}>}
  */
-export async function isCodexRunning() {
-  if (isWindows) {
-    return isCodexRunningWindows();
+async function getProcessState(processNames, { platform = process.platform, exec = execAsync } = {}) {
+  if (platform === 'win32') {
+    try {
+      const { stdout } = await exec('tasklist /fo csv /nh');
+      const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      const names = [];
+
+      for (const line of lines) {
+        const match = line.match(/^"([^"]+)"/);
+        if (!match) {
+          return { state: 'unknown', method: 'tasklist', error: `Unrecognized tasklist output: ${line}` };
+        }
+        names.push(match[1].toLowerCase());
+      }
+
+      const running = processNames.windows.some((name) => names.includes(name.toLowerCase()));
+      return { state: running ? 'running' : 'stopped', method: 'tasklist' };
+    } catch (err) {
+      return { state: 'unknown', method: 'tasklist', error: err.message };
+    }
   }
-  return isCodexRunningPosix();
+
+  for (const name of processNames.posix) {
+    try {
+      await exec(`pgrep -x ${name}`);
+      return { state: 'running', method: 'pgrep' };
+    } catch (err) {
+      if (err.code === 1) continue;
+      return { state: 'unknown', method: 'pgrep', error: err.message };
+    }
+  }
+  return { state: 'stopped', method: 'pgrep' };
 }
 
-async function isCodexRunningWindows() {
-  try {
-    const { stdout } = await execAsync('tasklist /fo csv /nh');
-    // tasklist CSV 格式：每行 "进程名","PID","会话名","会话编号","内存"
-    const lines = stdout.split('\n').map(l => l.trim()).filter(Boolean);
-    for (const line of lines) {
-      // 第一列是带引号的进程名
-      const nameMatch = line.match(/^"([^"]+)"/);
-      if (!nameMatch) continue;
-      const procName = nameMatch[1].toLowerCase();
-      if (CODEX_PROCESS_NAMES.windows.some(n => n.toLowerCase() === procName)) {
-        return true;
-      }
-    }
-    return false;
-  } catch {
-    // 命令执行失败时保守地返回 false
-    return false;
-  }
+/**
+ * Detect Codex without treating an unavailable or denied process command as stopped.
+ */
+export async function getCodexProcessState(options = {}) {
+  return getProcessState(CODEX_PROCESS_NAMES, options);
 }
 
-async function isCodexRunningPosix() {
-  try {
-    // pgrep -x 精确匹配进程名；找到时退出码 0，找不到时退出码 1
-    for (const name of CODEX_PROCESS_NAMES.posix) {
-      try {
-        await execAsync(`pgrep -x ${name}`);
-        return true; // 找到进程
-      } catch (err) {
-        if (err.code !== 1) throw err; // code 1 = 未找到，其他错误重新抛出
-      }
-    }
-    return false;
-  } catch {
-    return false;
+/** Detect Claude Code with the same fail-closed process check as Codex. */
+export async function getClaudeProcessState(options = {}) {
+  return getProcessState(CLAUDE_PROCESS_NAMES, options);
+}
+
+async function isProcessRunning(clientName, getState, options) {
+  const result = await getState(options);
+  if (result.state === 'unknown') {
+    throw new Error(`Unable to determine whether ${clientName} is running: ${result.error}`);
   }
+  return result.state === 'running';
+}
+
+/** Backwards-compatible boolean API. Unknown detection must not be mistaken for stopped. */
+export async function isCodexRunning(options = {}) {
+  return isProcessRunning('Codex', getCodexProcessState, options);
+}
+
+/** Unknown detection must not be mistaken for a stopped Claude Code process. */
+export async function isClaudeRunning(options = {}) {
+  return isProcessRunning('Claude Code', getClaudeProcessState, options);
 }
 
 /**

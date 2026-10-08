@@ -1,34 +1,38 @@
 // src/api/sync.js — POST /api/sync/plan, POST /api/sync/apply (SSE)
 import { Router } from 'express';
 import { prepareSync, applySync } from '../sync-service.js';
-import { isCodexRunning } from '../process-check.js';
+import { isCodexRunning, isClaudeRunning } from '../process-check.js';
+import { configForClient } from '../config.js';
 import { sseStream } from '../server.js';
 
 export const router = Router();
 
 router.post('/plan', async (req, res) => {
-  const cfg = req.app.locals.cfg;
   try {
+    const cfg = configForClient(req.app.locals.cfg, req.body?.client);
     const state = await prepareSync(cfg);
     res.json({
       plan: state.plan,
+      client: cfg.sync_client,
       incremental: true,
       baseline: state.baselineSource,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(/Unknown sync client/.test(e.message) ? 400 : 500).json({ error: e.message });
   }
 });
 
 router.post('/apply', async (req, res) => {
-  const cfg = req.app.locals.cfg;
   const log = req.app.locals.log;
   const sse = sseStream(res);
 
   try {
-    const running = await isCodexRunning();
+    const cfg = configForClient(req.app.locals.cfg, req.body?.client);
+    const running = cfg.sync_client === 'claude'
+      ? await isClaudeRunning()
+      : await isCodexRunning();
     if (running) {
-      sse.send({ type: 'error', message: 'Codex is running — close it before syncing' });
+      sse.send({ type: 'error', message: `${cfg.sync_client === 'claude' ? 'Claude Code' : 'Codex'} is running — close it before syncing` });
       sse.end(); return;
     }
 
@@ -36,7 +40,7 @@ router.post('/apply', async (req, res) => {
     const { plan } = state;
 
     const total = plan.to_upload.length + plan.to_download.length + plan.conflicts.length;
-    sse.send({ type: 'start', total, incremental: true, baseline: state.baselineSource });
+    sse.send({ type: 'start', total, client: cfg.sync_client, incremental: true, baseline: state.baselineSource });
     for (const conflict of plan.conflicts) {
       sse.send({ type: 'conflict', file: conflict.rel, policy: cfg.conflict?.policy ?? 'manual_abort' });
     }

@@ -6,8 +6,12 @@ import yaml from 'js-yaml';
 
 const DEFAULTS = {
   codex_home: '~/.codex',
+  claude_home: '~/.claude',
   machine_id: 'default',
   manifest_path: '~/.codex-session-sync/manifest.json',
+  claude_manifest_path: '~/.codex-session-sync/claude-manifest.json',
+  // Empty means a sibling of webdav.remote_path, e.g. /codex-sync-claude.
+  claude_remote_path: '',
   sync: {
     mode: 'cold',
     direction: 'bidirectional',
@@ -56,8 +60,10 @@ export function loadConfig(configPath) {
   const merged = deepMerge(DEFAULTS, raw);
   // expand home in key paths
   merged.codex_home = expandHome(merged.codex_home);
+  merged.claude_home = expandHome(merged.claude_home);
   merged.logging.file = expandHome(merged.logging.file);
   if (merged.manifest_path) merged.manifest_path = expandHome(merged.manifest_path);
+  if (merged.claude_manifest_path) merged.claude_manifest_path = expandHome(merged.claude_manifest_path);
   // derive backup_dir next to config or in ~/.codex-session-sync
   if (!merged.backup_dir) {
     const base = configPath ? dirname(resolve(configPath)) : expandHome('~/.codex-session-sync');
@@ -71,6 +77,10 @@ export function validateConfig(cfg) {
   if (!cfg || typeof cfg !== 'object') return ['config must be an object'];
   if (!cfg.codex_home || typeof cfg.codex_home !== 'string') errors.push('codex_home is required');
   if (!cfg.manifest_path || typeof cfg.manifest_path !== 'string') errors.push('manifest_path is required');
+  if (!cfg.claude_home || typeof cfg.claude_home !== 'string') errors.push('claude_home is required');
+  if (!cfg.claude_manifest_path || typeof cfg.claude_manifest_path !== 'string') {
+    errors.push('claude_manifest_path is required');
+  }
 
   const sync = cfg.sync ?? {};
   if (!['cold'].includes(sync.mode)) errors.push('sync.mode must be cold');
@@ -96,7 +106,56 @@ export function validateConfig(cfg) {
   if (!cfg.webdav?.remote_path || typeof cfg.webdav.remote_path !== 'string') {
     errors.push('webdav.remote_path is required');
   }
+  if (cfg.claude_remote_path && typeof cfg.claude_remote_path !== 'string') {
+    errors.push('claude_remote_path must be a string');
+  }
+  let codexRemotePath;
+  let claudeRemotePath;
+  if (typeof cfg.webdav?.remote_path === 'string' && cfg.webdav.remote_path) {
+    try { codexRemotePath = normalizeRemotePath(cfg.webdav.remote_path); }
+    catch { errors.push('webdav.remote_path contains unsafe path segments'); }
+  }
+  if (typeof cfg.claude_remote_path === 'string' && cfg.claude_remote_path) {
+    try { claudeRemotePath = normalizeRemotePath(cfg.claude_remote_path); }
+    catch { errors.push('claude_remote_path contains unsafe path segments'); }
+  }
+  if (codexRemotePath && claudeRemotePath && claudeRemotePath === codexRemotePath) {
+    errors.push('claude_remote_path must differ from webdav.remote_path');
+  }
   return errors;
+}
+
+function normalizeRemotePath(path) {
+  if (typeof path !== 'string' || !path || path.includes('\\') || /[\x00-\x1f]/.test(path) ||
+      path.split('/').some((part) => part === '.' || part === '..')) {
+    throw new Error('WebDAV remote path contains unsafe path segments');
+  }
+  return `/${path.split('/').filter(Boolean).join('/')}`;
+}
+
+/** Select an independent local and WebDAV repository for each CLI client. */
+export function configForClient(cfg, client = 'codex') {
+  if (!['codex', 'claude'].includes(client)) {
+    throw new Error(`Unknown sync client: ${client}`);
+  }
+  const codexRemotePath = normalizeRemotePath(cfg.webdav.remote_path);
+  if (client === 'codex') {
+    return { ...cfg, sync_client: client, local_home: cfg.codex_home };
+  }
+
+  const claudeRemotePath = cfg.claude_remote_path
+    ? normalizeRemotePath(cfg.claude_remote_path)
+    : codexRemotePath === '/' ? '/claude-sync' : `${codexRemotePath}-claude`;
+  if (claudeRemotePath === codexRemotePath) {
+    throw new Error('Claude remote path must differ from Codex remote path');
+  }
+  return {
+    ...cfg,
+    sync_client: client,
+    local_home: cfg.claude_home,
+    manifest_path: cfg.claude_manifest_path,
+    webdav: { ...cfg.webdav, remote_path: claudeRemotePath },
+  };
 }
 
 export function writeExampleConfig(dest) {
