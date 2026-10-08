@@ -1,7 +1,10 @@
 // src/config.js — load and validate config.yml
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs';
-import { resolve, dirname } from 'path';
+import {
+  readFileSync, existsSync, mkdirSync, writeFileSync, openSync, closeSync, renameSync, unlinkSync,
+} from 'fs';
+import { resolve, dirname, basename } from 'path';
 import { homedir } from 'os';
+import { randomUUID } from 'crypto';
 import yaml from 'js-yaml';
 
 const DEFAULTS = {
@@ -43,8 +46,11 @@ function expandHome(p) {
 function deepMerge(target, source) {
   const out = { ...target };
   for (const [k, v] of Object.entries(source ?? {})) {
+    if (['__proto__', 'constructor', 'prototype'].includes(k)) {
+      throw new Error(`Unsafe config key: ${k}`);
+    }
     if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
-      out[k] = deepMerge(target[k] ?? {}, v);
+      out[k] = deepMerge(Object.hasOwn(target, k) ? target[k] ?? {} : {}, v);
     } else {
       out[k] = v;
     }
@@ -52,12 +58,67 @@ function deepMerge(target, source) {
   return out;
 }
 
+export function mergeConfig(base, updates) {
+  return deepMerge(base, updates);
+}
+
+function isMapping(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function readConfigFile(configPath) {
+  let contents;
+  try {
+    contents = yaml.load(readFileSync(configPath, 'utf8')) ?? {};
+  } catch (error) {
+    // YAML parser messages can include nearby lines containing saved credentials.
+    if (error instanceof yaml.YAMLException) {
+      throw new Error(`Cannot parse config file: ${resolve(configPath)}`);
+    }
+    throw error;
+  }
+  if (!isMapping(contents)) throw new Error(`Config file must contain an object: ${resolve(configPath)}`);
+  return contents;
+}
+
+/** Persist only edited fields while preserving the file's existing settings. */
+export function saveConfig(configPath, updates) {
+  if (!isMapping(updates)) throw new Error('config updates must be an object');
+  const target = resolve(configPath);
+  let current = {};
+  try {
+    current = readConfigFile(target);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+
+  const serialized = yaml.dump(mergeConfig(current, updates), { noRefs: true });
+  const directory = dirname(target);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const temporary = resolve(directory, `.${basename(target)}.${randomUUID()}.tmp`);
+  let created = false;
+  let descriptor;
+  try {
+    descriptor = openSync(temporary, 'wx', 0o600);
+    created = true;
+    writeFileSync(descriptor, serialized, 'utf8');
+    closeSync(descriptor);
+    descriptor = undefined;
+    renameSync(temporary, target);
+    created = false;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (created) unlinkSync(temporary);
+  }
+}
+
 export function loadConfig(configPath) {
   let raw = {};
   if (configPath && existsSync(configPath)) {
-    raw = yaml.load(readFileSync(configPath, 'utf8')) ?? {};
+    raw = readConfigFile(configPath);
   }
-  const merged = deepMerge(DEFAULTS, raw);
+  const merged = mergeConfig(DEFAULTS, raw);
   // expand home in key paths
   merged.codex_home = expandHome(merged.codex_home);
   merged.claude_home = expandHome(merged.claude_home);
@@ -74,7 +135,10 @@ export function loadConfig(configPath) {
 
 export function validateConfig(cfg) {
   const errors = [];
-  if (!cfg || typeof cfg !== 'object') return ['config must be an object'];
+  if (!isMapping(cfg)) return ['config must be an object'];
+  for (const section of ['sync', 'conflict', 'backup', 'webdav', 'server', 'logging']) {
+    if (!isMapping(cfg[section])) errors.push(`${section} must be an object`);
+  }
   if (!cfg.codex_home || typeof cfg.codex_home !== 'string') errors.push('codex_home is required');
   if (!cfg.manifest_path || typeof cfg.manifest_path !== 'string') errors.push('manifest_path is required');
   if (!cfg.claude_home || typeof cfg.claude_home !== 'string') errors.push('claude_home is required');
@@ -102,7 +166,21 @@ export function validateConfig(cfg) {
   if (!['manual_abort', 'prefer_local', 'prefer_cloud', 'prefer_newer_mtime'].includes(policy)) {
     errors.push('conflict.policy is invalid');
   }
-  if (!cfg.webdav?.url || typeof cfg.webdav.url !== 'string') errors.push('webdav.url is required');
+  if (!cfg.webdav?.url || typeof cfg.webdav.url !== 'string') {
+    errors.push('webdav.url is required');
+  } else {
+    try {
+      const url = new URL(cfg.webdav.url);
+      if (!['http:', 'https:'].includes(url.protocol)) throw new Error('unsupported protocol');
+    } catch {
+      errors.push('webdav.url must be a valid http or https URL');
+    }
+  }
+  for (const field of ['username', 'password']) {
+    if (cfg.webdav?.[field] !== undefined && typeof cfg.webdav[field] !== 'string') {
+      errors.push(`webdav.${field} must be a string`);
+    }
+  }
   if (!cfg.webdav?.remote_path || typeof cfg.webdav.remote_path !== 'string') {
     errors.push('webdav.remote_path is required');
   }

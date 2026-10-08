@@ -80,6 +80,12 @@ other machines can use `npm install -g codex-session-sync-cli` or
 
 ## Quick start
 
+You can also run `cxsync serve`, enter your WebDAV details on the Sync page,
+and click Save configuration. This creates or updates
+`~/.codex-session-sync/config.yml`, which CLI `push` / `pull` commands also
+read. Testing the connection does not save settings. For a custom config,
+run `cxsync -c /path/to/config.yml serve` and use the same `-c` path for CLI commands.
+
 ```bash
 # 1. Generate config at ~/.codex-session-sync/config.yml
 cxsync init-config

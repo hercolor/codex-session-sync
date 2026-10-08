@@ -159,10 +159,16 @@ Streams SSE like sync/apply.
 ## Config
 
 ### GET /api/config
-Returns current config (passwords masked).
+Returns current config (passwords masked) and `config_path`, the file used by
+this server and CLI commands with the same configuration path.
 
 ### PUT /api/config
-Update config. Only provided keys are updated.
+Validate and update config. Only provided keys are updated. Changes are saved
+atomically to `config_path` before the running server adopts them; write failures
+leave the current configuration intact. An omitted, blank, or masked WebDAV
+password retains the saved password. Invalid updates return HTTP 400.
+
+Response: `{ "ok": true, "config_path": "/home/user/.codex-session-sync/config.yml" }`.
 
 `manifest_path`, `claude_home`, `claude_manifest_path`, and
 `claude_remote_path` may be supplied. The remote manifest name is always

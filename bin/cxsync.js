@@ -2,7 +2,7 @@
 // bin/cxsync.js — CLI entry point
 import { Command } from 'commander';
 import { existsSync, readFileSync } from 'fs';
-import { loadConfig, writeExampleConfig, getDefaultConfigPath, configForClient } from '../src/config.js';
+import { loadConfig, writeExampleConfig, getDefaultConfigPath, configForClient, validateConfig } from '../src/config.js';
 import { Logger } from '../src/logger.js';
 
 const program = new Command();
@@ -63,7 +63,7 @@ program
   .description('Build sync plan (no changes)')
   .option('--client <client>', 'codex | claude', 'codex')
   .action(async (opts) => {
-    const cfg = configForClient(getConfig(program), opts.client);
+    const cfg = configForClient(getSyncConfig(program), opts.client);
     const log = makeLogger(cfg, program);
     const { prepareSync } = await import('../src/sync-service.js');
 
@@ -211,14 +211,30 @@ program
     cfg.server.port = parseInt(opts.port, 10);
     const log = makeLogger(cfg, program);
     const { startServer } = await import('../src/server.js');
-    await startServer(cfg, log, { openBrowser: opts.open !== false });
+    await startServer(cfg, log, {
+      openBrowser: opts.open !== false,
+      configPath: program.opts().config ?? getDefaultConfigPath(),
+    });
   });
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 function getConfig(prog) {
   const opts = prog.opts();
   const cfgPath = opts.config ?? getDefaultConfigPath();
-  return loadConfig(existsSync(cfgPath) ? cfgPath : null);
+  if (opts.config && !existsSync(cfgPath)) {
+    throw new Error(`Config file not found: ${cfgPath}\nGenerate it with cxsync init-config --output "${cfgPath}"`);
+  }
+  return loadConfig(cfgPath);
+}
+
+function getSyncConfig(prog) {
+  const cfg = getConfig(prog);
+  const errors = validateConfig(cfg);
+  if (errors.length) {
+    const cfgPath = prog.opts().config ?? getDefaultConfigPath();
+    throw new Error(`Invalid configuration at ${cfgPath}:\n${errors.map(error => `  - ${error}`).join('\n')}\nRun cxsync serve and save your WebDAV settings, or edit this config file.`);
+  }
+  return cfg;
 }
 
 function makeLogger(cfg, prog) {
@@ -231,7 +247,7 @@ function makeLogger(cfg, prog) {
 }
 
 async function runSyncCommand(prog, opts, forcedDirection = null) {
-  const cfg = configForClient(getConfig(prog), opts.client);
+  const cfg = configForClient(getSyncConfig(prog), opts.client);
   const direction = forcedDirection ?? opts.direction;
   if (direction) {
     if (!['bidirectional', 'push', 'pull'].includes(direction)) {
@@ -276,4 +292,9 @@ async function runSyncCommand(prog, opts, forcedDirection = null) {
   if (result.errors?.length) process.exitCode = 1;
 }
 
-program.parse();
+try {
+  await program.parseAsync();
+} catch (error) {
+  console.error(`Error: ${error.message}`);
+  process.exitCode = 1;
+}

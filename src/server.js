@@ -4,6 +4,7 @@ import { createServer } from 'http';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { readFileSync } from 'fs';
+import { getDefaultConfigPath } from './config.js';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = resolve(__dir, '../web');
@@ -11,7 +12,10 @@ const PACKAGE_VERSION = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
 ).version;
 
-export async function startServer(cfg, log, { openBrowser = true } = {}) {
+export async function startServer(cfg, log, {
+  openBrowser = true,
+  configPath = getDefaultConfigPath(),
+} = {}) {
   const app = express();
   app.use(express.json());
 
@@ -21,6 +25,7 @@ export async function startServer(cfg, log, { openBrowser = true } = {}) {
 
   // ── inject config into server context ────────────────────────────────────
   app.locals.cfg = cfg;
+  app.locals.configPath = resolve(configPath);
   app.locals.log = log;
 
   // ── API routes ────────────────────────────────────────────────────────────

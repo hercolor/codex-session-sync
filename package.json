@@ -1,6 +1,6 @@
 {
   "name": "codex-session-sync-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Sync Codex and Claude Code sessions across machines via WebDAV with a CLI and local Web GUI.",
   "author": "shonn",
   "repository": {

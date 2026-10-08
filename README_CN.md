@@ -79,6 +79,11 @@ npm publish --access public
 
 ## 快速开始
 
+也可以直接运行 `cxsync serve`，在“同步”页面填写 WebDAV 信息并点击“保存配置”。
+页面会创建或更新 `~/.codex-session-sync/config.yml`；之后 CLI 的 `push` / `pull`
+会读取相同配置。“测试连接”只测试，不会保存。使用其他配置文件时，运行
+`cxsync -c /path/to/config.yml serve`，后续 CLI 命令也传入相同的 `-c` 路径。
+
 ```bash
 # 1. 生成配置文件（~/.codex-session-sync/config.yml）
 cxsync init-config
