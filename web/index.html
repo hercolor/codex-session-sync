@@ -586,7 +586,8 @@ async function renderSync(main) {
 
   const configButtons = el('div', {class:'flex gap-8'});
   configButtons.append(saveBtn, testBtn);
-  davCard.append(statusRow, form, configNotice, configButtons);
+  const pathHint = el('div', {class:'text-muted text-sm mt-8'}, '群晖等 NAS：同步路径需位于已有共享文件夹内，例如 /Rclone/codex-sync。');
+  davCard.append(statusRow, form, configNotice, configButtons, pathHint);
   main.appendChild(davCard);
 
   // Plan + Sync card

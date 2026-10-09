@@ -165,6 +165,11 @@ Claude Code 默认使用独立的 WebDAV 目录 `<webdav.remote_path>-claude`
 （例如 `/codex-sync-claude`）和本地 `claude_manifest_path` 清单。
 可通过 `claude_remote_path` 指定其他远端目录；两种客户端共用 WebDAV 凭据。
 
+群晖等 NAS 的 WebDAV 根目录列出的是共享文件夹，不能通过同步工具新建共享文件夹。
+请把同步目录放到已有、允许写入的共享文件夹下。例如已有 `Rclone` 共享时，设置
+`webdav.remote_path: /Rclone/codex-sync`，Claude 默认使用 `/Rclone/codex-sync-claude`。
+两台设备需使用相同的远端目录。
+
 ```bash
 # 机器 A：关闭 Claude Code 后上传
 cxsync push --client claude

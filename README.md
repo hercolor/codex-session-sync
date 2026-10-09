@@ -171,6 +171,12 @@ Claude Code uses an independent WebDAV repository under
 plus its own local `claude_manifest_path`. Set `claude_remote_path` to choose
 another remote directory. Both clients use the same WebDAV credentials.
 
+On NAS servers such as Synology, the WebDAV root lists shared folders;
+creating a shared folder requires the NAS administration interface. Place
+the sync repository inside an existing writable share. For example, with a
+`Rclone` share, set `webdav.remote_path: /Rclone/codex-sync`; Claude then uses
+`/Rclone/codex-sync-claude`. Use the same remote paths on both devices.
+
 ```bash
 # On machine A, close Claude Code and upload.
 cxsync push --client claude

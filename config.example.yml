@@ -35,6 +35,7 @@ webdav:
   username: your_username
   password: your_password
   remote_path: /codex-sync
+  # On Synology/NAS, use an existing writable share, e.g. /Rclone/codex-sync.
   # Each client keeps its own internal .cxsync-manifest.json at its remote path.
   # Both repositories use these same WebDAV credentials.
 

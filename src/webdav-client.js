@@ -26,7 +26,7 @@ export function createWebDAVClient(webdavConfig) {
    */
   function fullPath(rel) {
     const normalized = rel.replace(/\\/g, '/').replace(/^\//, '');
-    return baseRemotePath + '/' + normalized;
+    return baseRemotePath === '/' ? '/' + normalized : baseRemotePath + '/' + normalized;
   }
 
   return {
@@ -89,7 +89,11 @@ export function createWebDAVClient(webdavConfig) {
       const target = fullPath(remotePath);
       // 确保父目录存在
       await ensureRemoteDir(raw, dirOf(target));
-      await raw.putFileContents(target, buffer, { overwrite: true });
+      try {
+        await raw.putFileContents(target, buffer, { overwrite: true });
+      } catch (err) {
+        throw remoteOperationError('PUT', target, err);
+      }
     },
 
     /**
@@ -145,13 +149,53 @@ async function listRecursive(rawClient, dirPath, acc) {
  */
 async function ensureRemoteDir(rawClient, dirPath) {
   if (!dirPath || dirPath === '/') return;
-  try {
-    await rawClient.createDirectory(dirPath, { recursive: true });
-  } catch (err) {
-    // 目录已存在（405 / 409）时忽略
-    const status = err?.status ?? err?.response?.status;
-    if (status !== 405 && status !== 409 && status !== 301) throw err;
+  let currentPath = '';
+  for (const segment of dirPath.split('/').filter(Boolean)) {
+    currentPath += '/' + segment;
+    let item;
+    try {
+      item = await rawClient.stat(currentPath);
+    } catch (err) {
+      if (httpStatus(err) !== 404) {
+        throw remoteOperationError('PROPFIND', currentPath, err, true);
+      }
+    }
+    if (item) {
+      if (item.type !== 'directory') {
+        throw new Error(`WebDAV path is not a directory: ${currentPath}`);
+      }
+      continue;
+    }
+
+    try {
+      await rawClient.createDirectory(currentPath);
+    } catch (err) {
+      // 群晖根目录可能返回 405，不能据此认定目录存在。
+      // 仅再次确认目录确实存在时，才接受其他客户端同时创建目录的情况。
+      let existing;
+      try { existing = await rawClient.stat(currentPath); }
+      catch { /* 保留创建失败的操作、路径及状态。 */ }
+      if (existing?.type !== 'directory') {
+        throw remoteOperationError('MKCOL', currentPath, err, true);
+      }
+    }
   }
+}
+
+function httpStatus(err) {
+  return err?.status ?? err?.response?.status ?? err?.response?.statusCode;
+}
+
+/** 错误信息只包含操作、远端路径及状态，不传播 URL、凭据或响应头。 */
+function remoteOperationError(operation, remotePath, original, directory = false) {
+  const status = httpStatus(original);
+  const detail = status == null ? '' : ` (HTTP ${status})`;
+  const hint = directory
+    ? 'Check that the remote path is under an existing WebDAV shared folder and that the account has write permission.'
+    : 'Check write permission for the remote file.';
+  const error = new Error(`WebDAV ${operation} ${remotePath} failed${detail}. ${hint}`);
+  if (status != null) error.status = status;
+  return error;
 }
 
 /**
